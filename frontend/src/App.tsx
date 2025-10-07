@@ -1,29 +1,23 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import type { ApiRuntimeMode } from "./api";
+import {
+  ApiBlock,
+  ApiSchedule,
+  EventPayload,
+  ProposalPreview,
+  createEvent,
+  completeEvent,
+  getProposal,
+  getSchedule,
+  getCurrentApiMode,
+  subscribeToApiMode,
+  updateSettings
+} from "./api";
 
-interface ApiEvent {
-  event_id: string;
-  type: "fixed" | "flexible";
-  duration_minutes: number;
-  importance: number;
-  details: Record<string, unknown>;
-}
-
-interface ApiBlock {
-  start: string;
-  end: string;
-  event_id: string;
-  type: "fixed" | "flexible";
-  chunk_index?: number | null;
-  chunk_count?: number | null;
-}
-
-interface ApiSchedule {
-  day_start: string;
-  day_end: string;
-  events: ApiEvent[];
-  blocks: ApiBlock[];
-  free_windows: { start: string; end: string }[];
-}
+const describeMode = (mode: ApiRuntimeMode): string =>
+  mode === "mock"
+    ? "Источник данных: демонстрационный режим (бекенд недоступен)."
+    : "Источник данных: живой сервер FastAPI.";
 
 interface EventFormState {
   eventId: string;
@@ -40,11 +34,6 @@ interface EventFormState {
 interface SettingsFormState {
   dayStart: string;
   dayEnd: string;
-}
-
-interface ProposalPreview {
-  blocks: ApiBlock[];
-  free_windows: { start: string; end: string }[];
 }
 
 const defaultEventForm: EventFormState = {
@@ -84,14 +73,14 @@ function toLocalInput(value: string | undefined): string {
   return localDate.toISOString().slice(0, 16);
 }
 
-function buildEventPayload(form: EventFormState, includeId = true) {
-  const base = {
+function buildEventPayload(form: EventFormState, includeId = true): EventPayload {
+  const base: EventPayload = {
     type: form.type,
     duration_minutes: form.durationMinutes,
     importance: form.importance,
     can_split: form.type === "flexible" ? form.canSplit : false,
     min_chunk_minutes: form.minChunkMinutes
-  } as Record<string, unknown>;
+  };
 
   if (form.type === "fixed") {
     base.start = toIso(form.start);
@@ -117,16 +106,20 @@ const App = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string>(() => describeMode(getCurrentApiMode()));
+
+  useEffect(() => {
+    const unsubscribe = subscribeToApiMode((mode) => {
+      setNotice(describeMode(mode));
+    });
+    return unsubscribe;
+  }, []);
 
   const fetchSchedule = async () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch("/api/schedule");
-      if (!response.ok) {
-        throw new Error("Не удалось загрузить расписание");
-      }
-      const data: ApiSchedule = await response.json();
+      const data = await getSchedule();
       setSchedule(data);
       setSettingsForm({
         dayStart: toLocalInput(data.day_start),
@@ -172,16 +165,7 @@ const App = () => {
 
     try {
       const payload = buildEventPayload(form, true);
-      const response = await fetch("/api/events", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(data?.detail ?? "Не удалось создать событие");
-      }
-      const data: ApiSchedule = await response.json();
+      const data = await createEvent(payload);
       setSchedule(data);
       setSuccess("Событие успешно добавлено");
       setForm({ ...defaultEventForm });
@@ -195,16 +179,7 @@ const App = () => {
     setError(null);
     setSuccess(null);
     try {
-      const response = await fetch(`/api/events/${eventId}/complete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ completion_time: new Date().toISOString() })
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(data?.detail ?? "Не удалось завершить событие");
-      }
-      const data: ApiSchedule = await response.json();
+      const data = await completeEvent(eventId);
       setSchedule(data);
       setSuccess("Событие завершено, расписание обновлено");
     } catch (err) {
@@ -217,19 +192,10 @@ const App = () => {
     setError(null);
     setSuccess(null);
     try {
-      const response = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          day_start: toIso(settingsForm.dayStart),
-          day_end: toIso(settingsForm.dayEnd)
-        })
+      const data = await updateSettings({
+        day_start: toIso(settingsForm.dayStart),
+        day_end: toIso(settingsForm.dayEnd)
       });
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(data?.detail ?? "Не удалось обновить настройки");
-      }
-      const data: ApiSchedule = await response.json();
       setSchedule(data);
       setSuccess("Настройки рабочего окна сохранены");
     } catch (err) {
@@ -242,16 +208,7 @@ const App = () => {
     setSuccess(null);
     try {
       const payload = buildEventPayload(form, false);
-      const response = await fetch("/api/proposals", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(data?.detail ?? "Не удалось получить рекомендации");
-      }
-      const data: ProposalPreview = await response.json();
+      const data = await getProposal(payload);
       setProposal(data);
       setSuccess("Получены рекомендуемые интервалы");
     } catch (err) {
@@ -267,6 +224,7 @@ const App = () => {
       <h1>Планировщик дня</h1>
       <p>Управляйте задачами, гибкостью выполнения и смотрите свободные окна в расписании.</p>
 
+      {notice ? <p className="info">{notice}</p> : null}
       {error ? <p className="error">{error}</p> : null}
       {success ? <p className="success">{success}</p> : null}
 

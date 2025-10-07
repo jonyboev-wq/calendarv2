@@ -27,6 +27,36 @@ API поднимается на `http://localhost:8000`. Основные энд
 - `PUT /api/settings` — изменение границ рабочего дня.
 - `POST /api/proposals` — подбор рекомендуемых временных интервалов.
 
+### macOS: устранение ошибок SSL при `pip install`
+
+При первом запуске на macOS с Python из официального установщика может не хватать доверенных сертификатов, из-за чего `pip` сообщает `certificate verify failed`. Чтобы исправить проблему:
+
+1. Выполните скрипт установки сертификатов (укажите фактическую версию Python):
+   ```bash
+   open "/Applications/Python 3.11/Install Certificates.command"
+   ```
+   После завершения окна установщика снова запустите `pip install -r requirements.txt`.
+   Если скрипт не завершился из-за той же ошибки `certificate verify failed`, переходите к шагу 2.
+2. Если Python установлен через Homebrew, обновите пакет сертификатов:
+   ```bash
+   brew install certifi
+   export SSL_CERT_FILE="$(python3 -m certifi)"
+   pip install -r requirements.txt
+   ```
+3. Для Python из официального установщика, когда шаг 1 завершается ошибкой, можно вручную выгрузить системные сертификаты и указать их `pip`:
+   ```bash
+   security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > ~/Desktop/macos_system_roots.pem
+   export SSL_CERT_FILE=~/Desktop/macos_system_roots.pem
+   pip install -r requirements.txt
+   ```
+   После успешной установки зависимостей переменную окружения можно убрать, а созданный файл — удалить.
+4. В крайнем случае можно указать доверенные хосты вручную (не рекомендуется как постоянное решение):
+   ```bash
+   pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
+   ```
+
+После установки сертификатов дальнейшие вызовы `pip install` проходят без ошибок.
+
 ## Запуск фронтенда
 
 ```bash
@@ -36,6 +66,53 @@ npm run dev
 ```
 
 Vite проксирует запросы `/api/*` на `http://localhost:8000`, поэтому UI сразу общается с запущенным бэкендом. Готовая сборка собирается командой `npm run build`, предпросмотр — `npm run preview`.
+
+### Ошибки прокси в dev-сервере Vite
+
+Если в консоли разработки появляются сообщения вида `http proxy error: /api/events ... ETIMEDOUT`, это значит, что Vite не может добраться до бекенда на `http://localhost:8000`.
+
+1. Убедитесь, что сервер FastAPI действительно запущен и слушает порт `8000`:
+   ```bash
+   lsof -i tcp:8000
+   ```
+   Если команда ничего не выводит, перезапустите Uvicorn: `uvicorn src.api.main:app --reload`.
+2. Проверьте, что бекенд не упал с ошибкой (например, из-за недостающих зависимостей) и что вы запускаете его в том же окружении, где устанавливали пакеты.
+3. При необходимости обновите прокси-цель. Если бекенд запущен на другом хосте или порту, отредактируйте `frontend/vite.config.ts`, изменив значение `target` в секции `server.proxy`.
+4. На macOS с активным фаерволом добавьте Uvicorn и Node.js в разрешённые приложения, чтобы локальный трафик не блокировался.
+
+### Полный список команд macOS
+
+Ниже собраны команды, которые использовались в инструкциях. Выполняйте их по порядку, добавляя дополнительные шаги при возникновении ошибок.
+
+```bash
+cd /Users/vinda/Documents/GitHub/calendarv2
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+open "/Applications/Python 3.12/Install Certificates.command"
+uvicorn src.api.main:app --reload
+
+cd /Users/vinda/Documents/GitHub/calendarv2/frontend
+npm install
+npm run dev
+```
+
+```
+
+> Команда с `open` используется только если `pip install` завершился ошибкой `certificate verify failed`.
+
+### Режим мок-API для разработки без бэкенда
+
+Фронтенд автоматически пытается обратиться к FastAPI и при сетевой ошибке переключается на демонстрационный режим. Никаких дополнительных действий не требуется: после первого неуспешного запроса вы увидите отметку «Источник данных: демонстрационный режим» и сможете продолжить работу с локальными мок-данными.
+
+При необходимости можно принудительно выбрать режим через переменную `VITE_API_MODE`:
+
+```bash
+echo "VITE_API_MODE=mock" > frontend/.env.local   # всегда использовать мок-режим
+echo "VITE_API_MODE=http" > frontend/.env.local   # никогда не переключаться на мок-режим
+```
+
+После изменения переменной перезапустите `npm run dev`. Удалите строку из `.env.local`, чтобы снова включить автоматическое определение режима.
 
 ## Тесты
 
